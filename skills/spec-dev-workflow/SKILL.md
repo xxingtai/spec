@@ -1,13 +1,15 @@
 ---
 name: spec-dev-workflow
-version: 0.5.0
+version: 0.6.0
 description: >
-  spec-workflow 编排层的核心流水线 skill（spec 驱动开发，8 阶段；另附 9 阶段串联流水线）。
+  spec-workflow 编排层的核心流水线 skill（spec 驱动开发）。默认走 9 阶段串联流程：
+  把 spec-health-check 的质量评审/终局验收与 dev-docs 的文档对账挂成机器门禁；
+  另附 8 阶段独立流程（零外部依赖，用 {"extends":"default"} 退回）。
   由编排引擎（spec_cli.py）驱动：开始新功能/新阶段时初始化 spec，
   按声明式流水线逐阶段推进——每阶段完成必须通过机器门禁（结构 + 可扩展检查），
   需求/设计两阶段先经用户确认，产物与决策登记进 state.json，阶段间以 handoff 交接。
   支持中断后断点续传。门禁三类：builtin 内置规则、command 外部命令（args + 占位符，跨平台接任意 CLI）、
-  review 质量门控（score + Gate 红线）。内置 chained 流水线把 spec-health-check 与 dev-docs 串进流程。
+  review 质量门控（score + Gate 红线）。
   触发词：开始开发、开始阶段、开始功能、init spec、初始化开发、
   开发第N阶段、准备开发、恢复开发、继续开发、查进度
 ---
@@ -60,15 +62,31 @@ python3 $CLI handoff list <spec根目录> <feature>
 ### 流水线选择
 
 ```text
-<spec根目录>/pipeline.json        项目级定义（存在即整体替换内置定义）
+<spec根目录>/pipeline.json        项目级定义（存在即优先于内置默认）
     写法 A：完整 stages 数组
     写法 B：{"extends": "<内置名>"}  ← 继承本 skill 内置流水线，可再覆盖 id/name/version
                                       （给 stages 则整体替换，适合"只改一小部分"）
-内置：pipelines/default.json      8 阶段（编排骨架，不依赖其他 skill）
-      pipelines/chained.json      9 阶段（串联 spec-health-check + dev-docs，见下）
+
+内置（**不写 pipeline.json 时用 chained**）：
+      pipelines/chained.json      9 阶段 · 默认 —— 串联 spec-health-check + dev-docs（见下）
+      pipelines/default.json      8 阶段 · 零外部依赖 —— 想单用本 skill 时
+                                 写 {"extends": "default"} 退回
 ```
 
-`init` / `status` / `restore` 都会打印实际生效的 pipeline id 与来源（builtin / project），
+**默认流水线会校验同级 skill 依赖。** chained 的 `command` 门禁直接调用
+`{SKILLS_DIR}/spec-health-check/…` 与 `{SKILLS_DIR}/dev-docs/…`；这两个路径与 feature 无关，
+所以引擎在**加载期**就检查它们存在——缺失时直接退出并给出两条出路（补装同级 skill /
+`{"extends":"default"}` 退回独立流程），而不是等收口时门禁甩出一个 `can't open file`。
+
+**阶段集合不可中途替换。** 流水线每次都由磁盘重新解析，而 state 是 `init` 时冻结的。
+`status` / `restore` / `gate` / `phase-complete` 都会比对两者阶段集合，不一致时拒绝执行
+并打印两个集合的差异。只比**阶段 id 序列**、不比 pipeline id —— 同一阶段集合下改门禁参数
+或改 id 名是合法的，只有阶段增减才是真问题。
+典型触发：改了 `pipeline.json`，或 skill 升级后默认流水线变更——后者会命中**升级前 init
+的老 feature**（8 阶段 state 撞上 9 阶段默认），在 `pipeline.json` 写回
+`{"extends": "default"}` 即可继续。
+
+`init` / `status` / `restore` 都会打印实际生效的 pipeline id、名称、阶段数与来源，
 可据此确认配置是否生效。`extends` 的名字只允许字母数字`-`，路径穿越会被拒绝。
 
 ## 入口路由（每次会话第一步）
@@ -120,6 +138,10 @@ python3 $CLI handoff list <spec根目录> <feature>
 ---
 
 ## 八阶段参考（产物内容指南，配合 references/ 使用）
+
+> 本节覆盖 8 个**核心阶段的产物内容指南**，两种内置流水线共用。
+> 默认的 chained 在此基础上多一个 `09 acceptance`（终局验收，产物 `health-report.md`），
+> 其内容指南见下方「串联流水线」一节。
 
 ### 进度状态
 
@@ -247,13 +269,17 @@ python3 $CLI handoff list <spec根目录> <feature>
 > 注意：`tools` **不会自动调用**另一个 skill。本引擎是状态机 + 门禁裁决器，不是调度器；
 > 生成动作仍由 AI 在阶段内按对应 SKILL.md 执行，门禁只负责验收。
 
-## 串联流水线（chained，9 阶段）
+## 串联流水线（chained，9 阶段 · 默认）
 
-在 `<spec根目录>/pipeline.json` 写一行即可启用：
+**这是默认流水线**——不写 `<spec根目录>/pipeline.json` 就用它（`init` 即可直接开跑）。
+想显式退回零外部依赖的独立流程，写：
 
 ```json
-{"extends": "chained"}
+{"extends": "default"}
 ```
+
+> **前置**：需要 `spec-health-check` 与 `dev-docs` 与本 skill **同级安装**。缺依赖时引擎在
+> 加载期就 fail-closed 报错，**不会静默降级**成 8 阶段——降级会把质量红线一起降掉。
 
 在 default 8 阶段之上做了三件事：
 
@@ -286,5 +312,6 @@ python3 $CLI handoff list <spec根目录> <feature>
 > 通用教训：以"退出码即结论"接入外部 CLI 时，先确认**它在异常输入下真的会非 0 退出**，而不是
 > 静默降级后返回 0。上面第 2 条就是没验证这一点踩出来的。
 
-> 同级 skill：`spec-health-check` 与 `dev-docs` 都位于本编排层 `skills/` 下的同级目录；
-> 两者也都能作为独立工具对任意项目单独使用，不依赖本流水线。
+> 同级 skill：`spec-health-check` 与 `dev-docs` 都位于本编排层 `skills/` 下的同级目录。
+> 默认流水线对它们是**硬依赖**（加载期校验）；两者本身仍能作为独立工具对任意项目单独使用，
+> 不依赖本流水线。

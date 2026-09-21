@@ -1,7 +1,8 @@
 {
   "id": "spec-default",
-  "name": "Spec 标准流程（8 阶段）",
+  "name": "Spec 标准流程（8 阶段，零外部依赖）",
   "version": "1.0",
+  "note": "【非默认，显式退回用】零外部依赖的独立流程：只用本 skill 即可跑完，不调用 spec-health-check / dev-docs。默认流水线是 chained（9 阶段串联流程），想退回本流程需在 <spec根>/pipeline.json 写 {\"extends\": \"default\"}。适合：未安装同级 skill、或只想跑轻量流程的场景。",
   "stages": [
     {
       "id": "requirements",

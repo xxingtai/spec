@@ -31,8 +31,13 @@ spec-workflow 编排引擎 CLI（M0）
               min_score 比总分，require_gate 比 Gate 红线（green<yellow<red，缺失即拒）
 
 流水线来源：<spec-root>/pipeline.json 优先（支持 {"extends":"<内置名>"} 继承
-pipelines/<名>.json），否则用内置 pipelines/default.json。内置可选：
-default（8 阶段）、chained（9 阶段，串联 spec-health-check + dev-docs）。
+pipelines/<名>.json），否则用内置 pipelines/chained.json（**默认**）。内置可选：
+  - chained（9 阶段，默认）：串联 spec-health-check 的评审/验收与 dev-docs 的对账
+  - default（8 阶段）：零外部依赖的独立流程，用 {"extends":"default"} 显式退回
+
+默认流水线会连带校验同级 skill 依赖：command 门禁里 {SKILLS_DIR}/<skill>/… 指向的文件
+不存在时在**加载期**直接报错（fail-closed），并给出「补装同级 skill」与
+「{"extends":"default"} 退回独立流程」两条出路 —— 避免门禁在收口时才静默失败。
 """
 
 import argparse
@@ -52,6 +57,10 @@ from typing import NoReturn
 SKILL_ROOT = Path(__file__).resolve().parent.parent          # scripts/ 的上级 = skill 目录
 TEMPLATES_DIR = SKILL_ROOT / "templates"
 PIPELINES_DIR = SKILL_ROOT / "pipelines"
+
+# 默认内置流水线：串联三 skill 的 9 阶段流程。两者都按名解析，改名只需改这里。
+DEFAULT_PIPELINE_NAME = "chained"        # 无 <spec根>/pipeline.json 时用它
+STANDALONE_PIPELINE_NAME = "default"     # 零外部依赖的 8 阶段流程（显式退回 + 默认缺失时兜底）
 
 MIN_ARTIFACT_BYTES = 100      # 产物"非空"阈值
 MAX_HANDOFF_BYTES = 4096      # handoff 序列化上限
@@ -165,13 +174,68 @@ def load_builtin_pipeline(name) -> dict:
     return _read_pipeline_file(path)
 
 
+def missing_skill_deps(pipeline: dict) -> list:
+    """校验 command 门禁里 {SKILLS_DIR}/… 与 {SKILL_DIR}/… 指向的文件真实存在。
+
+    这两个占位符的取值与 feature 无关（不像 {SPEC_ROOT}/{PROJECT_ROOT}），所以能在
+    加载期判定。返回 [(阶段 id, 依赖标识, 缺失的绝对路径)]，空列表 = 依赖齐全。
+    """
+    problems = []
+    bases = (("SKILLS_DIR", SKILL_ROOT.parent), ("SKILL_DIR", SKILL_ROOT))
+    for s in pipeline.get("stages", []):
+        sid = s.get("id")
+        for check in s.get("gate", {}).get("checks", []):
+            if check.get("type") != "command":
+                continue
+            for text in _check_command_texts(check):
+                t = str(text)
+                for key, base in bases:
+                    prefix = "{%s}/" % key
+                    if not t.startswith(prefix):
+                        continue
+                    rel = t[len(prefix):]
+                    if not (base / rel).exists():
+                        # 依赖标识：内建同级 skill 取首段目录名，本 skill 自身取自身目录名
+                        dep = rel.split("/")[0] if key == "SKILLS_DIR" else SKILL_ROOT.name
+                        problems.append((sid, dep, str(base / rel)))
+    return problems
+
+
+def verify_skill_deps(pipeline: dict) -> None:
+    """默认流水线串联同级 skill，缺依赖时 fail-closed 报错并给出两条出路。
+
+    为什么要在加载期拦：这些依赖是 command 门禁的**可执行入口**，缺失时门禁一定失败，
+    但失败信息是子进程的 "can't open file"，离真正的原因（skill 没装）很远。
+    """
+    problems = missing_skill_deps(pipeline)
+    if not problems:
+        return
+    seen, detail = set(), []
+    for sid, dep, path in problems:
+        if (sid, dep) in seen:
+            continue
+        seen.add((sid, dep))
+        detail.append("  - 阶段 [%s] → %s：找不到 %s" % (sid, dep, path))
+    err("\n".join([
+        "流水线 [%s] 引用的同级 skill 依赖缺失：" % pipeline.get("id", "?"),
+    ] + detail + [
+        "",
+        "本 skill 的默认流水线是**串联流程**（chained，9 阶段），需要 spec-health-check 与",
+        "dev-docs 与本 skill 同级安装。两种解决方式：",
+        "  1) 把这两个 skill 装到同一个 skills 目录下：%s" % SKILL_ROOT.parent,
+        "  2) 只用本 skill 独立开发（8 阶段，零外部依赖）：在 <spec根>/pipeline.json 写",
+        '     {"extends": "default"}',
+    ]))
+
+
 def load_pipeline(spec_root: str) -> dict:
     """查找顺序：
       1) <spec-root>/pipeline.json（项目级）。
          若其为 {"extends": "<名>"} 形式，则以本 skill 内置 pipelines/<名>.json 为基底：
          项目文件里的 id/name/version 覆盖基底，出现 stages 时整体替换基底 stages
          （用于"只想改一小部分、又不想复制全量阶段"的场景）。
-      2) 本 skill 内置 pipelines/default.json
+      2) 本 skill 内置 pipelines/chained.json（默认）
+         —— 找不到时退回 default.json，避免内置文件被误删直接崩。
     """
     project_cfg = Path(spec_root) / "pipeline.json"
     if project_cfg.is_file():
@@ -189,13 +253,50 @@ def load_pipeline(spec_root: str) -> dict:
             p["_extends"] = str(base_name)
         p["_source"] = {"path": str(project_cfg), "kind": "project"}
     else:
-        default_cfg = PIPELINES_DIR / "default.json"
+        default_cfg = PIPELINES_DIR / ("%s.json" % DEFAULT_PIPELINE_NAME)
+        if not default_cfg.is_file():
+            default_cfg = PIPELINES_DIR / ("%s.json" % STANDALONE_PIPELINE_NAME)
         p = _read_pipeline_file(default_cfg)
         p["_source"] = {"path": str(default_cfg), "kind": "builtin"}
     errors = validate_pipeline(p)
     if errors:
         err("pipeline 定义不合法:\n  " + "\n  ".join(errors))
+    verify_skill_deps(p)
     return p
+
+
+def load_pipeline_matching(spec_root: str, state: dict) -> dict:
+    """读 pipeline 并核对**阶段集合**与 state.json 记录一致（阶段集合不可中途替换）。
+
+    流水线每次都由磁盘重新解析，而 state 是 init 时冻结的。两者阶段集合不一致时，
+    state 里没有的阶段会被误显示成「待开始」、收口顺序也会错位，所以直接拦下并给修复指引。
+    只比阶段 id 序列、不比 pipeline id —— 同一阶段集合下改 id 名或调门禁参数是合法的，
+    只有阶段增减才是真问题。
+    典型触发：改了 <spec根>/pipeline.json，或 skill 升级后默认流水线变更。
+    """
+    pipeline = load_pipeline(spec_root)
+    recorded = list((state.get("phases") or {}).keys())
+    current = phase_ids(pipeline)
+    if recorded and recorded != current:
+        added = [p for p in current if p not in recorded]
+        gone = [p for p in recorded if p not in current]
+        detail = []
+        if added:
+            detail.append("  本次新增阶段：%s" % ", ".join(added))
+        if gone:
+            detail.append("  本次缺少阶段：%s" % ", ".join(gone))
+        err("\n".join([
+            "流水线阶段集合与 state.json 不一致，拒绝继续（阶段集合不可中途替换）。",
+            "  state 记录  ：%s" % (", ".join(recorded) or "（空）"),
+            "  当前流水线  ：%s（pipeline id: %s）" % (", ".join(current), pipeline.get("id")),
+        ] + detail + [
+            "  常见原因：<spec根>/pipeline.json 被改动，或 skill 升级后默认流水线变更。",
+            "  修复：",
+            "    - 想沿用原阶段集合 → 在 <spec根>/pipeline.json 里显式写回它，",
+            '      例如 {"extends": "%s"}' % STANDALONE_PIPELINE_NAME,
+            "    - 确实要换流水线 → 用新流水线重新 init 一个 feature",
+        ]))
+    return pipeline
 
 
 def _check_command_texts(check: dict) -> list:
@@ -509,7 +610,13 @@ def cmd_init(args) -> None:
     print("   目录: %s（时间戳 %s + slug %s）" % (feature, feature[:12], slug))
     print("   文档: %s" % docs)
     print("   会话: %s" % sess)
-    print("   pipeline: %s（%s）" % (pipeline["id"], pipeline["_source"]["kind"]))
+    src = pipeline["_source"]
+    print("   pipeline: %s · %s（%d 阶段，%s）" % (
+        pipeline["id"], pipeline.get("name", ""), len(pipeline["stages"]),
+        "内置默认" if src["kind"] == "builtin" else "项目配置"))
+    if src["kind"] == "builtin":
+        print('   （内置默认流水线；若想退回零外部依赖的 8 阶段独立流程，'
+              '在 %s/pipeline.json 写 {"extends": "default"}）' % spec_root)
     print("   下一步: 进入「%s」阶段（产物：%s）" %
           (pipeline["stages"][0]["id"], ", ".join(pipeline["stages"][0].get("artifacts", []))))
 
@@ -821,7 +928,7 @@ def cmd_gate(args) -> None:
     docs, _ = ensure_feature(args.spec_root, args.feature)
     sess = session_dir(args.spec_root, args.feature)
     state = load_state(sess)
-    pipeline = load_pipeline(args.spec_root)
+    pipeline = load_pipeline_matching(args.spec_root, state)
     phase = args.phase or state.get("current_phase") or phase_ids(pipeline)[-1]
     if phase is None:
         err("当前无进行中阶段")
@@ -833,7 +940,7 @@ def cmd_gate(args) -> None:
 def cmd_phase_complete(args) -> None:
     docs, sess = ensure_feature(args.spec_root, args.feature)
     state = load_state(sess)
-    pipeline = load_pipeline(args.spec_root)
+    pipeline = load_pipeline_matching(args.spec_root, state)
     phase = args.phase
     ids = phase_ids(pipeline)
     if phase not in ids:
@@ -922,7 +1029,7 @@ def cmd_status(args) -> None:
     ensure_feature(args.spec_root, args.feature)
     sess = session_dir(args.spec_root, args.feature)
     state = load_state(sess)
-    pipeline = load_pipeline(args.spec_root)
+    pipeline = load_pipeline_matching(args.spec_root, state)
     print(render_board(state, pipeline))
     total = len(pipeline["stages"])
     done = sum(1 for s in pipeline["stages"]
@@ -936,7 +1043,7 @@ def cmd_restore(args) -> None:
     ensure_feature(args.spec_root, args.feature)
     sess = session_dir(args.spec_root, args.feature)
     state = load_state(sess)
-    pipeline = load_pipeline(args.spec_root)
+    pipeline = load_pipeline_matching(args.spec_root, state)
 
     # 找最近完成阶段的 handoff（按流水线顺序取最后一个 completed 且 handoff 存在的阶段）
     last_handoff = None
