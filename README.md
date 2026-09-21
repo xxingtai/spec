@@ -129,27 +129,6 @@ requirements ── design ── implementation ── unit-test ── integra
 - Python 3.12+ + tree-sitter（仅 `dev-docs`，见 `skills/dev-docs/requirements.txt`）
 - Windows 下若没有 `python3` 启动名，用 `python` 或 `py -3` 替代
 
-## Fork 说明
-
-### 状态
-
-| | |
-|:---|:---|
-| 仓库性质 | 长期 fork，独立演进 |
-| 原创作者 | **ryaondeng**（三个 skill 的原始设计与实现） |
-| 当前维护者 | **xingtai** |
-| 分叉起点 | 2026-09-21 |
-| 上游同步 | **关闭** —— 不追踪、不合并上游提交 |
-
-### 这意味着什么
-
-- **版本号不通用**：本仓库与上游各自演进版本线，同号不同内容。引用时请带仓库标识
-  （`xxingtai/spec@spec-dev-workflow 0.5.0`），不要只写版本号。
-- **上游修复不会自动进来**：如果上游后续修了 bug，需要人工判断是否移植，不存在 merge 流程。
-- **本仓库的改动是主线**：`spec-dev-workflow` 0.5.0 的编排层扩展（门禁 args 模式 / 占位符 /
-  `require_gate` / `extends` / `tools`）与 `pipelines/chained.json` 都只存在于这里。
-- **归属保留**：每个 skill 的 `SKILL.md` 与 `_meta.json` 均保留原作者的 `author` 字段；
-  fork 关系记录在 `_meta.json` 的 `fork` 块里（`maintainer` / `since` / `upstreamSync: false`）。
 
 ### 变更记录在哪
 
@@ -174,9 +153,3 @@ requirements ── design ── implementation ── unit-test ── integra
 - `spec-health-check` 0.3.1 → **0.3.2**：补机器契约文档（退出码语义、两层检查边界、门禁接入约定）
 - `dev-docs` 1.5.6 → **1.5.7**：修正失效的 `install.py` 引用、补 `doctor` 文档、新增编排契约与分工边界
 
-### 2026-09-21 — 确立长期 fork
-
-- 明确本仓库为**长期 fork**，关闭上游同步、不合并上游提交；README 增加「Fork 说明」章节
-- 各 skill `_meta.json` 的 `modifiedBy` 字段改为 `fork` 块
-  （`maintainer` / `since` / `upstreamSync` / `note`），并保留原作者 `author`
-- 标注待办：本仓库尚无 LICENSE，对外分发前需确定授权并与上游授权核对
