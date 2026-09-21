@@ -1,0 +1,10 @@
+# dev-docs 运行时依赖（v1.5 起为硬依赖，全语言统一走 tree-sitter）
+# 安装：pip install -r requirements.txt
+tree-sitter>=0.26
+tree-sitter-python>=0.23
+tree-sitter-cpp>=0.23
+tree-sitter-c>=0.23
+tree-sitter-java>=0.23
+tree-sitter-javascript>=0.25
+tree-sitter-typescript>=0.23
+tree-sitter-bash>=0.25

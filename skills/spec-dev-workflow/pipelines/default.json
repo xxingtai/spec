@@ -1,0 +1,104 @@
+{
+  "id": "spec-default",
+  "name": "Spec 标准流程（8 阶段）",
+  "version": "1.0",
+  "stages": [
+    {
+      "id": "requirements",
+      "name": "需求阐述",
+      "artifacts": ["01-requirements.md"],
+      "confirm_point": true,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]}
+        ]
+      },
+      "tools": []
+    },
+    {
+      "id": "design",
+      "name": "设计规划",
+      "artifacts": ["02-design.md", "03-implementation-plan.md"],
+      "confirm_point": true,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]}
+        ]
+      },
+      "tools": []
+    },
+    {
+      "id": "implementation",
+      "name": "实现",
+      "artifacts": ["08-commit.md"],
+      "confirm_point": false,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "no_fill_marker", "tasks_any_checked"]}
+        ]
+      },
+      "tools": []
+    },
+    {
+      "id": "unit-test",
+      "name": "单元测试",
+      "artifacts": ["04-unit-test-plan.md"],
+      "confirm_point": false,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]}
+        ]
+      },
+      "tools": []
+    },
+    {
+      "id": "integration-test",
+      "name": "集成测试",
+      "artifacts": ["05-integration-test-plan.md"],
+      "confirm_point": false,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]}
+        ]
+      },
+      "tools": []
+    },
+    {
+      "id": "review",
+      "name": "Code Review",
+      "artifacts": ["06-code-review-report.md"],
+      "confirm_point": false,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]},
+          {"type": "review", "min_score": 80, "desc": "spec 质量评审（spec-health-check 四维评审：A需求/B一致性/C真实性/D设计计划）"}
+        ]
+      },
+      "tools": []
+    },
+    {
+      "id": "docs",
+      "name": "文档更新",
+      "artifacts": ["07-docs-update-plan.md"],
+      "confirm_point": false,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]}
+        ]
+      },
+      "tools": []
+    },
+    {
+      "id": "commit",
+      "name": "完成记录",
+      "artifacts": ["08-commit.md"],
+      "confirm_point": false,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "no_fill_marker", "tasks_all_checked"]}
+        ]
+      },
+      "tools": []
+    }
+  ]
+}

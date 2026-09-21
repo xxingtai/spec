@@ -1,0 +1,8 @@
+{
+  "slug": "spec-dev-workflow",
+  "version": "0.4.1",
+  "createdAt": "2026-07-17",
+  "updatedAt": "2026-09-06",
+  "author": "ryaondeng",
+  "note": "spec-workflow 编排层第一个被集成的 skill（自包含：SKILL.md + scripts/spec_cli.py + pipelines + templates + references）"
+}
