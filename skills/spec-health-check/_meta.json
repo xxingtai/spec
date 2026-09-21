@@ -5,5 +5,10 @@
   "updatedAt": "2026-09-21",
   "author": "ryaondeng",
   "note": "0.3.2：补齐机器契约文档——脚本层退出码语义（errors>0 → 1）、两层检查对\"文档不全\"的口径差异（脚本层硬要求 9 文件齐全 / 模型层对部分填写标不适用）、以及作为 spec-dev-workflow 流水线门禁（06 review + 09 acceptance）时的接入约定；修正 init-spec.sh 的失效引用。",
-  "modifiedBy": "xingtai"
+  "fork": {
+    "maintainer": "xingtai",
+    "since": "2026-09-21",
+    "upstreamSync": false,
+    "note": "长期 fork，独立演进，不与上游同步；本仓库版本号不可与上游直接比对。原作者归属保留。"
+  }
 }

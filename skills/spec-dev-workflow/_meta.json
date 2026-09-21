@@ -5,5 +5,10 @@
   "updatedAt": "2026-09-21",
   "author": "ryaondeng",
   "note": "spec-workflow 编排层第一个被集成的 skill（自包含：SKILL.md + scripts/spec_cli.py + pipelines + templates + references）。0.5.0 起支持 command 门禁 args 模式与占位符/环境变量注入、review 门控的 require_gate Gate 红线判定、pipeline 的 extends 继承，以及声明式 tools 字段；新增 pipelines/chained.json 串联 spec-health-check 与 dev-docs。",
-  "modifiedBy": "xingtai"
+  "fork": {
+    "maintainer": "xingtai",
+    "since": "2026-09-21",
+    "upstreamSync": false,
+    "note": "长期 fork，独立演进，不与上游同步；本仓库版本号不可与上游直接比对。原作者归属保留。"
+  }
 }

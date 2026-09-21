@@ -5,5 +5,10 @@
   "updatedAt": "2026-09-21",
   "author": "ryaondeng",
   "note": "1.5.7：补齐可被编排的机器契约文档——修正 install.py / install.sh / uninstall.sh 的失效引用（本 skill 无独立安装脚本，复制目录 + pip install -r requirements.txt 即可）；补上 CLI 速记中遗漏的 doctor 子命令；新增「作为 spec-dev-workflow 流水线门禁」与「与 spec 流程的分工边界」两节，并记录关键坑：缺 tree-sitter 时 inventory 静默产出空盘点、check --strict 对空文档集返回 PASS，故门禁必须 doctor 前置。",
-  "modifiedBy": "xingtai"
+  "fork": {
+    "maintainer": "xingtai",
+    "since": "2026-09-21",
+    "upstreamSync": false,
+    "note": "长期 fork，独立演进，不与上游同步；本仓库版本号不可与上游直接比对。原作者归属保留。"
+  }
 }
