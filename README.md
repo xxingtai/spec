@@ -1,18 +1,10 @@
 # spec
 
-WorkBuddy Agent Skills 集合：以 **Spec 驱动开发（spec-driven development）** 为核心的一组可复用技能，
+以 **Spec 驱动开发（spec-driven development）** 为核心的一组可复用技能，
 覆盖「需求 → 设计 → 实现 → 测试 → 评审 → 文档 → 提交」全链路。
 
 三个 skill **可以单独用，也可以串起来用** —— 由 `spec-dev-workflow` 当编排层，
 把 `spec-health-check` 的质量验收和 `dev-docs` 的文档抽取挂成流水线门禁。
-
-> **本仓库是长期 fork，独立演进，不与上游同步。**
->
-> 这三个 skill 的原创作者是 **ryaondeng**，本仓库在其基础上做了编排层改造，
-> 自 2026-09-21 起由 **xingtai** 独立维护。**不追踪上游变更、不合并上游提交。**
->
-> ⚠️ 因此本仓库的版本号与上游**不可直接比对**：同号不同内容。
-> 引用版本时请带上仓库标识（如 `xxingtai/spec@spec-dev-workflow 0.5.0`），不要只说版本号。
 
 ## 技能列表
 
