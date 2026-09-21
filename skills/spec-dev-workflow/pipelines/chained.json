@@ -1,0 +1,148 @@
+{
+  "id": "spec-chained",
+  "name": "Spec 串联流程（9 阶段：编排 + 质量验收 + 文档抽取）",
+  "version": "1.0",
+  "note": "在 default 8 阶段之上：① 06 review 增加 Gate 红线判定（与 spec-health-check 的 🟢 条件集对齐）；② 07 docs 挂 dev-docs 的对账门禁；③ 新增 09 acceptance 阶段，把 spec-health-check 的脚本层与模型层同时作为终局门禁。启用方式：在 <spec根目录>/pipeline.json 写 {\"extends\": \"chained\"}。",
+  "stages": [
+    {
+      "id": "requirements",
+      "name": "需求阐述",
+      "artifacts": ["01-requirements.md"],
+      "confirm_point": true,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]}
+        ]
+      },
+      "tools": []
+    },
+    {
+      "id": "design",
+      "name": "设计规划",
+      "artifacts": ["02-design.md", "03-implementation-plan.md"],
+      "confirm_point": true,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]}
+        ]
+      },
+      "tools": [
+        {"skill": "dev-docs", "optional": true,
+         "role": "存量项目：可先在流水线外跑一轮 dev-docs 反建，把 docs/dev-docs/architecture.md 作为 02-design 的「现状架构基线」输入"}
+      ]
+    },
+    {
+      "id": "implementation",
+      "name": "实现",
+      "artifacts": ["08-commit.md"],
+      "confirm_point": false,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "no_fill_marker", "tasks_any_checked"]}
+        ]
+      },
+      "tools": []
+    },
+    {
+      "id": "unit-test",
+      "name": "单元测试",
+      "artifacts": ["04-unit-test-plan.md"],
+      "confirm_point": false,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]}
+        ]
+      },
+      "tools": []
+    },
+    {
+      "id": "integration-test",
+      "name": "集成测试",
+      "artifacts": ["05-integration-test-plan.md"],
+      "confirm_point": false,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]}
+        ]
+      },
+      "tools": []
+    },
+    {
+      "id": "review",
+      "name": "Code Review",
+      "artifacts": ["06-code-review-report.md"],
+      "confirm_point": false,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]},
+          {"type": "review", "min_score": 85, "require_gate": "green",
+           "desc": "spec 质量评审（spec-health-check 四维：A需求/B一致性/C真实性/D设计计划）；min_score 85 与 Gate 🟢（总分≥85 且每维≥75 且 open MINOR<3）对齐，gate 缺失或非 green 一律拒绝"}
+        ]
+      },
+      "tools": [
+        {"skill": "spec-health-check",
+         "role": "按四维评审框架对 feature 产物链评审打分，产出 score + gate + dimensions + issues",
+         "entry": "scripts/health-check.py",
+         "gate": "四维评审 → phase-complete --review-result"}
+      ]
+    },
+    {
+      "id": "docs",
+      "name": "文档更新",
+      "artifacts": ["07-docs-update-plan.md"],
+      "confirm_point": false,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]},
+          {"type": "command", "desc": "前置环境自检。必须有：缺 tree-sitter 时 inventory 会静默产出空盘点（0 符号），而 check --strict 对空文档集返回 PASS —— 只用 check 当门禁会漏放。doctor 在环境未就绪时退出码非 0。",
+           "cmd": "python",
+           "args": ["{SKILLS_DIR}/dev-docs/scripts/dev_docs.py", "doctor", "--dir", "{PROJECT_ROOT}"]},
+          {"type": "command", "desc": "dev-docs 对账门禁：orphan/phantom/stale 全清 + AI-FILL 填尽 + 文件归属无遗漏（--strict）",
+           "cmd": "python",
+           "args": ["{SKILLS_DIR}/dev-docs/scripts/dev_docs.py", "check", "--dir", "{PROJECT_ROOT}", "--strict"]}
+        ]
+      },
+      "tools": [
+        {"skill": "dev-docs",
+         "role": "对本次变更涉及的模块做增量再提取，产物落 <项目>/docs/dev-docs/；07-docs-update-plan.md 记录产物清单、未归属文件与登记豁免",
+         "entry": "scripts/dev_docs.py",
+         "gate": "doctor（环境自检）→ check --strict（对账），两步都 exit 0 才放行",
+         "requires": "pip install -r <skill>/requirements.txt（tree-sitter，Python 3.12+）；缺依赖时 inventory 会产出空盘点让 check 误判为 PASS，故 doctor 必须前置"}
+      ]
+    },
+    {
+      "id": "commit",
+      "name": "完成记录",
+      "artifacts": ["08-commit.md"],
+      "confirm_point": false,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "no_fill_marker", "tasks_all_checked"]}
+        ]
+      },
+      "tools": []
+    },
+    {
+      "id": "acceptance",
+      "name": "终局验收",
+      "artifacts": ["health-report.md"],
+      "confirm_point": false,
+      "gate": {
+        "checks": [
+          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_fill_marker"]},
+          {"type": "command", "desc": "spec-health-check 脚本层：9 文件齐全 / 无占位符残留 / 结构一致（errors=0 才放行）",
+           "cmd": "python",
+           "args": ["{SKILLS_DIR}/spec-health-check/scripts/health-check.py", "{SPEC_ROOT}", "{SPEC_FEATURE}"]},
+          {"type": "review", "min_score": 85, "require_gate": "green",
+           "desc": "spec-health-check 模型层：按 health-report.md 的加权总分与 Gate 收口；Gate 非 🟢 必须返修后重跑（回归模式）"}
+        ]
+      },
+      "tools": [
+        {"skill": "spec-health-check",
+         "role": "终局体检：脚本层验结构，模型层按四维评分并输出 health-report.md（Gate 🔴 时按返修指引修复后回归检查）",
+         "entry": "scripts/health-check.py",
+         "gate": "health-report.md 的 Gate 须 🟢 且总分 ≥85"}
+      ]
+    }
+  ]
+}

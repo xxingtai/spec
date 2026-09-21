@@ -1,12 +1,14 @@
 ---
 name: spec-dev-workflow
-version: 0.4.1
+version: 0.5.0
 description: >
-  spec-workflow 编排层的核心流水线 skill（spec 驱动开发，8 阶段）。
+  spec-workflow 编排层的核心流水线 skill（spec 驱动开发，8 阶段；另附 9 阶段串联流水线）。
   由编排引擎（spec_cli.py）驱动：开始新功能/新阶段时初始化 spec，
   按声明式流水线逐阶段推进——每阶段完成必须通过机器门禁（结构 + 可扩展检查），
   需求/设计两阶段先经用户确认，产物与决策登记进 state.json，阶段间以 handoff 交接。
-  支持中断后断点续传。触发词：开始开发、开始阶段、开始功能、init spec、初始化开发、
+  支持中断后断点续传。门禁三类：builtin 内置规则、command 外部命令（args + 占位符，跨平台接任意 CLI）、
+  review 质量门控（score + Gate 红线）。内置 chained 流水线把 spec-health-check 与 dev-docs 串进流程。
+  触发词：开始开发、开始阶段、开始功能、init spec、初始化开发、
   开发第N阶段、准备开发、恢复开发、继续开发、查进度
 ---
 
@@ -53,7 +55,21 @@ python3 $CLI handoff read <spec根目录> <feature> <阶段>         # 读上游
 python3 $CLI handoff list <spec根目录> <feature>
 ```
 
-`<spec根目录>` 默认为项目下 `spec/`；流水线定义取 `<spec根目录>/pipeline.json`（项目覆盖）→ skill 内置 `pipelines/default.json`。
+`<spec根目录>` 默认为项目下 `spec/`。
+
+### 流水线选择
+
+```text
+<spec根目录>/pipeline.json        项目级定义（存在即整体替换内置定义）
+    写法 A：完整 stages 数组
+    写法 B：{"extends": "<内置名>"}  ← 继承本 skill 内置流水线，可再覆盖 id/name/version
+                                      （给 stages 则整体替换，适合"只改一小部分"）
+内置：pipelines/default.json      8 阶段（编排骨架，不依赖其他 skill）
+      pipelines/chained.json      9 阶段（串联 spec-health-check + dev-docs，见下）
+```
+
+`init` / `status` / `restore` 都会打印实际生效的 pipeline id 与来源（builtin / project），
+可据此确认配置是否生效。`extends` 的名字只允许字母数字`-`，路径穿越会被拒绝。
 
 ## 入口路由（每次会话第一步）
 
@@ -76,8 +92,9 @@ python3 $CLI handoff list <spec根目录> <feature>
    先把产物要点 + 验收标准/设计要点呈现给用户，**获用户认可后才能收口**，不得自主推进。
 4. **review 质量门控**（pipeline 中挂 `{"type":"review"}` 的阶段，默认 review）：
    收口前按 `spec-health-check` skill 的四维评审（A 需求质量/B 跨文档一致性/C 留痕真实性/D 设计计划）
-   对 feature 产物链评审打分，产出 review-result（score 0-100 + dimensions + issues）：
+   对 feature 产物链评审打分，产出 review-result（score 0-100 + gate + dimensions + issues）：
    - `phase-complete ... --review-result '<json>'`；引擎校验 score ≥ min_score（默认 80）才放行
+   - 配置了 `require_gate` 时**还必须给出 `gate` 且达到该等级**（缺失即拒，fail-closed）
    - **低于红线被拒**：按输出的 issues 修复产物 → 重新评审 → 再收口；禁止降阈值或绕过
    - review-result 管 spec 文档质量；代码审查由 06-code-review-report.md + code-reviewer 子代理负责（互补）
 5. **收口**：`phase-complete ... --handoff '<json>'`。门禁全过则状态推进并刷新视图，进入下一阶段循环。
@@ -170,8 +187,104 @@ python3 $CLI handoff list <spec根目录> <feature>
 
 - **三类检查**：
   - `builtin` 内置规则：`artifacts_exist` / `artifacts_nonempty`（≥100B）/ `no_placeholder` / `no_fill_marker` / `tasks_any_checked` / `tasks_all_checked`
-  - `command` 外部命令：`{"type":"command","cmd":"..."}`（exit 0 通过）——接入任意 CLI 不改引擎
-  - `review` 质量门控：`{"type":"review","min_score":80}`——收口时需 `--review-result`（spec-health-check 四维评审），score ≥ min_score 才放行
+  - `command` 外部命令：exit 0 通过——**接入任意 CLI 不改引擎**
+  - `review` 质量门控：`{"type":"review","min_score":80,"require_gate":"green"}`——收口时需 `--review-result`
 - **门禁失败**：`phase-complete` 整体失败且状态零变化；修复产物后重试（review 被拒则重评）
+- pipeline 加载期就会校验门禁声明：未知占位符、非法 `require_gate`、`args` 非数组、`tools` 结构错误都会直接报错退出，不会等到收口时才炸。
 
-> 编排层第二个被集成的 skill：`spec-health-check`（位于本编排层 `skills/` 下的同级 skill 目录；也可作为独立体检工具对任意 spec 目录使用）。
+### command 门禁：args 模式（推荐）
+
+```json
+{"type":"command",
+ "cmd": "python",
+ "args": ["{SKILLS_DIR}/dev-docs/scripts/dev_docs.py", "check", "--dir", "{PROJECT_ROOT}", "--strict"]}
+```
+
+- `cmd` 为可执行文件。首元素写 `python` / `python3` 时引擎会替换为当前解释器（Windows 常无 `python3` 启动名）。
+- **`args` 模式用 `shell=False` 逐参数传递**：路径含空格/中文安全，不经过 shell 解析。**跨平台推荐用这种。**
+- 旧式 `{"cmd":"<整条 shell 命令>"}` 仍支持（交给 cmd.exe / `/bin/sh`），仅用于兼容既有配置。
+
+**可用占位符**（引擎展开，不依赖 shell 变量语法）：
+
+| 占位符 | 值 |
+|:---|:---|
+| `{SPEC_ROOT}` | spec 根目录（绝对路径） |
+| `{SPEC_FEATURE}` | 当前 feature 目录名（`<yyyymmddhhmm>-<slug>`） |
+| `{SPEC_DOCS_DIR}` | 当前 feature 的文档目录（绝对路径） |
+| `{SPEC_SESSION_DIR}` | 当前 feature 的会话目录（含 state.json / handoff） |
+| `{PROJECT_ROOT}` | spec 根目录的上级 = 被开发项目根（默认 `<项目>/spec` 时成立） |
+| `{SPEC_PHASE}` | 当前阶段 id |
+| `{SKILL_DIR}` | 本 skill 目录 |
+| `{SKILLS_DIR}` | 同级 skill 的父目录（`spec-health-check` / `dev-docs` 所在处） |
+| `{PYTHON}` | 当前 Python 解释器绝对路径 |
+
+同一批键名**同时作为环境变量注入**门禁进程（`SPEC_ROOT` / `SPEC_FEATURE` / `SPEC_PHASE` …），
+脚本可直接 `os.environ["SPEC_FEATURE"]` 读取，不必自己解析参数。门禁命令的 `cwd` 恒为 `<spec根目录>`。
+
+> `{SKILLS_DIR}` 依赖"三个 skill 同级安装"这一约定——它们都在同一个 `skills/` 目录下。
+> 若你把某个 skill 装到别处，改用它自己的绝对路径。
+
+### review 门控：score + Gate 红线
+
+```json
+{"type":"review","min_score":85,"require_gate":"green","desc":"..."}
+```
+
+- `min_score`：总分下限。`--review-result '{"score":88,"gate":"green","dimensions":[...],"issues":[...]}'`
+- `require_gate`：可选。要求 `gate` 达到该等级（`green` < `yellow` < `red`）。**缺失或非法时 fail-closed 拒绝**，
+  防止"只报分数不报 Gate"绕过红线。语义与 `spec-health-check` 的 Gate 条件集对齐。
+
+### tools：阶段与 skill 的绑定声明
+
+```json
+"tools": [{"skill":"dev-docs","role":"文档抽取与对账","entry":"scripts/dev_docs.py","gate":"check --strict"}]
+```
+
+`tools` 是**声明式**的：引擎不执行它，仅做结构校验，并在 `restore` 时输出当前阶段的绑定
+（`restore --json` 的 `current_stage_tools` 字段 + 纯文本建议行）。作用是让"这个阶段该用哪个 skill、
+验收靠哪条命令"随流水线一起版本化，AI 恢复会话时能直接读到，不用靠记忆。
+
+> 注意：`tools` **不会自动调用**另一个 skill。本引擎是状态机 + 门禁裁决器，不是调度器；
+> 生成动作仍由 AI 在阶段内按对应 SKILL.md 执行，门禁只负责验收。
+
+## 串联流水线（chained，9 阶段）
+
+在 `<spec根目录>/pipeline.json` 写一行即可启用：
+
+```json
+{"extends": "chained"}
+```
+
+在 default 8 阶段之上做了三件事：
+
+| 阶段 | 相对 default 的变化 |
+|:---|:---|
+| `06 review` | `min_score` 80→**85**，并加 `require_gate: "green"`，与 spec-health-check 的 🟢 对齐 |
+| `07 docs` | 追加**两步** `command` 门禁：`dev_docs.py doctor`（环境自检）→ `dev_docs.py check --dir {PROJECT_ROOT} --strict`（对账）。**文档未对账完不能收口** |
+| `09 acceptance`（新增） | 产物 `health-report.md`；builtin + `command`（`health-check.py` 脚本层）+ `review`（模型层 Gate），**两层同时把关** |
+
+三个 skill 的协作契约：
+
+| skill | 在流水线中的角色 | 机器接口 |
+|:---|:---|:---|
+| `spec-dev-workflow` | 唯一状态机与门禁裁决者 | `spec_cli.py` |
+| `spec-health-check` | `06 review` 的评审器 + `09 acceptance` 的验收器 | `health-check.py <spec根目录> <名称>`，退出码即结论 |
+| `dev-docs` | `07 docs` 的文档抽取与对账器 | `dev_docs.py check --dir <项目根> --strict`，退出码即结论 |
+
+**三条重要口径**（踩过才知道）：
+
+1. `07 docs` 的门禁是**读-only 对账**。dev-docs 没跑过就没有 `inventory.json`，门禁会直接失败并提示
+   "先运行 inventory" —— 这是有意的：chained 流水线要求文档阶段必须真的用 dev-docs 做。
+   项目确实不需要 dev-docs 时，用 `phase-complete … docs --skip "原因"` 显式跳过，而不是放宽门禁。
+2. `07 docs` 的门禁**必须先 `doctor` 再 `check`**。缺 tree-sitter 时 `inventory` 会静默产出"0 符号"的
+   空盘点，而 `check --strict` 对空文档集返回 **PASS** —— 只挂 `check` 会把"什么都没提取"放行。
+   `doctor` 在环境未就绪时退出码非 0，正好补上这个缺口。
+3. `09 acceptance` 的 `command` 门禁（health-check 脚本层）**只保证结构**——9 文件齐全、无占位符残留。
+   实测它对刚 `init` 出来的模板桩也会返回 0。真正的质量红线由同阶段的 `review` 门控
+   （`require_gate: green`）承担，**不要因为脚本层绿灯就以为可以收口**。
+
+> 通用教训：以"退出码即结论"接入外部 CLI 时，先确认**它在异常输入下真的会非 0 退出**，而不是
+> 静默降级后返回 0。上面第 2 条就是没验证这一点踩出来的。
+
+> 同级 skill：`spec-health-check` 与 `dev-docs` 都位于本编排层 `skills/` 下的同级目录；
+> 两者也都能作为独立工具对任意项目单独使用，不依赖本流水线。

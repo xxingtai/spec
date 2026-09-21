@@ -1,7 +1,9 @@
 {
   "slug": "spec-health-check",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "createdAt": "2026-09-04",
-  "updatedAt": "2026-09-06",
-  "author": "ryaondeng"
+  "updatedAt": "2026-09-21",
+  "author": "ryaondeng",
+  "note": "0.3.2：补齐机器契约文档——脚本层退出码语义（errors>0 → 1）、两层检查对\"文档不全\"的口径差异（脚本层硬要求 9 文件齐全 / 模型层对部分填写标不适用）、以及作为 spec-dev-workflow 流水线门禁（06 review + 09 acceptance）时的接入约定；修正 init-spec.sh 的失效引用。",
+  "modifiedBy": "xingtai"
 }

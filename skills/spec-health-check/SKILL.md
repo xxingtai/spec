@@ -1,13 +1,14 @@
 ---
 name: spec-health-check
-version: 0.3.1
+version: 0.3.2
 description: >
   Spec 健康度检查。对已存在的 spec 目录（spec-dev-workflow 8 阶段结构：00-index → 08-commit）
-  执行双层检查：脚本层验证结构与交叉一致性，模型层评审文档质量与留痕真实性，
+  执行双层检查：脚本层验证结构与一致性，模型层评审文档质量与留痕真实性，
   输出健康度报告（0-100 数值评分 + Gate 红线判定 + 问题清单 + 返修指引），
   低于红线自动爆红并强制引导返修。
   重复检查自动转为回归模式：同一份报告内核对遗留问题修复状态、追加新发现、记录检查历史趋势。
   适用于任何符合该 9 文件结构的 spec，不论由什么工具生成。
+  也可作为 spec-dev-workflow 的流水线门禁被机器调用（脚本层退出码 + 模型层 Gate 两层）。
   触发词：检查spec、spec健康度、检查spec质量、体检spec、验收spec、spec健康检查
 ---
 
@@ -23,7 +24,7 @@ description: >
 
 ## 检查对象
 
-符合以下结构的 spec 目录（由 spec-dev-workflow 的 init-spec.sh 生成，或其他来源的等价结构）：
+符合以下结构的 spec 目录（由 spec-dev-workflow 的 `spec_cli.py init` 生成，或其他来源的等价结构）：
 
 ```text
 <spec-dir>/
@@ -37,6 +38,31 @@ description: >
   07-docs-update-plan.md      文档更新
   08-commit.md         完成记录
 ```
+
+### 两层检查的边界（重要）
+
+两层对"文档不全"的态度**不一样**，别混为一谈：
+
+| | 脚本层（`health-check.py`） | 模型层（AI 按四维框架评审） |
+|:---|:---|:---|
+| 前提 | **9 个文件必须齐全**，缺任一个即 `errors+=1` | 部分填写的 spec 也能评审 |
+| 对未开始阶段 | 硬报错（不区分"没写"和"写错"） | 标注"不适用"，**不扣分** |
+| 结论形态 | 退出码（`errors>0` → 1） | 0-100 分数 + Gate 红黄绿 |
+| 谁消费 | 人读输出；被流水线当 `command` 门禁时读退出码 | AI 填进 `--review-result`，或写进 `health-report.md` |
+
+所以：**开发中途的 spec 只适合走模型层**；脚本层门禁必须放在 9 个文件都产出之后
+（例如 spec-dev-workflow 串联流水线把脚本层放在最后的 `acceptance` 阶段）。
+
+### 脚本层退出码契约
+
+```text
+exit 0  = 结构层无 error（可能有 warning）→ 可继续
+exit 1  = 存在 error（文件缺失 / 占位符残留）或用法错误 → 拒绝
+```
+
+脚本层**只判结构**，不产出分数、也不判 Gate。因此它当门禁时只能挡住"结构性缺件"，
+**不能代表 Gate 通过**——真正的质量红线必须由模型层的 Gate 承担。
+（实测：刚 `init` 出来的模板桩也能让脚本层返回 0。）
 
 ## 执行流程
 
@@ -226,3 +252,26 @@ Gate 是条件集而非单阈值（仿 SonarQube Quality Gate），**任一条�
 - **不重复数数**：所有计数以 SUMMARY 块为准，正文只做定性判断
 - **报告落盘后向用户汇报摘要**：本次模式（首次/回归）、Gate 状态 + 总分及变化、修复/新增/遗留数、Top 问题、下一步建议；Gate=🔴 时按动作协议爆红提示
 - 部分填写的 spec（开发中途）也可以检查，此时重点检查已完成阶段的可信度，未开始阶段标注"不适用"而非扣分
+  （注意：这条只对**模型层**成立，脚本层见上文"两层检查的边界"）
+
+## 作为 spec-dev-workflow 的流水线门禁（被编排时）
+
+本 skill 可以不改一行代码地挂进 `spec-dev-workflow` 的门禁，两处接入点：
+
+| 接入点 | 门禁类型 | 引擎看到的 |
+|:---|:---|:---|
+| `06 review` 阶段 | `{"type":"review","min_score":85,"require_gate":"green"}` | AI 的四维评审产出 `--review-result`（score + **gate** + dimensions + issues） |
+| `09 acceptance` 阶段 | `{"type":"command","cmd":"python","args":["<skill>/scripts/health-check.py","{SPEC_ROOT}","{SPEC_FEATURE}"]}` | 脚本层退出码 |
+
+被编排时必须遵守的几条：
+
+1. **`--review-result` 里必须显式给出 `gate`**。`require_gate` 是 fail-closed 的：只报 `score`
+   不报 `gate` 会被直接拒绝，这不是 bug。
+2. **Gate 取值只能是 `green` / `yellow` / `red`**，与本文档的红线条件集一一对应。别自造档位
+   （如 `blue`/`pass`），引擎在 pipeline 加载期就会拦。
+3. **脚本层不产生分数**，所以它永远不能替代 `review` 门禁。两个接入点是一体的：
+   脚本层保结构，模型层保质量。
+4. `health-check.py` 的调用签名与引擎的 feature 约定天然对齐——`<spec根目录> <名称>` 里第二个参数
+   就是 feature 目录名（`<yyyymmddhhmm>-<slug>`），用 `{SPEC_FEATURE}` 传入即可。
+5. Gate=🔴 时按本文档的**动作协议**爆红 + 给返修指引，然后**重跑回归模式**验证转绿；
+   不要为了让门禁通过而调高 `min_score` 或放宽 `require_gate`。

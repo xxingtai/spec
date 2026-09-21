@@ -1,6 +1,6 @@
 ---
 name: dev-docs
-version: 1.5.6
+version: 1.5.7
 description: >
   从已有代码库反建技术文档（dev-docs）：面向没有接口/设计/架构文档的存量项目，
   用「规则提取（文件全集/机器盘点/对账漂移）+ LLM 提取（AI 通读建语义地图再按模板填文档）」双轨机制，
@@ -12,6 +12,7 @@ description: >
   人工登记通道（register，带 file:line 源码证据）、证据标注防编造（evidence 协议 + unknown）。
   语言策略：Python 由 AST 可靠提取；其他语言/生态（C++、ROS msg/srv、任意 DSL）由 LLM 语义地图覆盖，
   关键符号用 register 显式登记（不算 phantom）。
+  也可作为 spec-dev-workflow 串联流水线的 07 docs 阶段门禁（dev_docs.py check --strict）。
   触发词：给项目生成文档、从代码提取文档、反建文档、补接口文档、补架构文档、生成API文档、dev-docs、逆向文档化
 ---
 
@@ -30,12 +31,31 @@ description: >
 
 ## 系统要求（跨平台）
 
-- Python 3.12+，运行时依赖 tree-sitter（v1.5 起全语言统一抽取；安装器自动 `pip install -r skills/dev-docs/requirements.txt`，手动安装亦可）。Windows / Linux / macOS 原生可跑。
+- **Python 3.12+**（`scripts/dev_docs.py` 与 `scripts/dev_inventory.py` 均为纯 Python，无其他运行时依赖）。
+- **运行时依赖 tree-sitter**（v1.5 起全语言统一抽取），硬依赖，必须装：
+
+  ```bash
+  python -m pip install -r <skill目录>/requirements.txt
+  ```
+
+  想确认环境是否就绪，先跑自检：`python <skill目录>/scripts/dev_docs.py doctor --dir <目标项目>`。
 - Windows 若没有 `python3` 启动名，用 `python` 或 `py -3` 替代下文命令中的 `python3`。
 - 生成产物统一 LF 换行（脚本跨平台固定 `newline="\n"`）：任何平台生成结果字节一致，
   确定性（byte-identical）与 git diff / CI 漂移检测不受换行符影响。
-- 全仓库安装：`install.py`（跨平台，`python install.py --project <path>` 或 `--global`）；
-  Git Bash / WSL 下亦可 `bash install.sh`。bash 脚本（install.sh/uninstall.sh 等）需要 Git Bash/WSL。
+
+### 安装方式
+
+本 skill **没有独立的安装脚本**，直接复制目录即可（`SKILL.md` / `scripts/` / `templates/` / `references/` / `requirements.txt` 已是完整自包含的一套）：
+
+```bash
+# 用户级
+cp -r <解压出的>/dev-docs ~/.workbuddy/skills/
+# 项目级
+cp -r <解压出的>/dev-docs <项目>/.workbuddy/skills/
+```
+
+装完记得执行上面那条 `pip install -r`。仓库里若还出现过 `install.py` / `install.sh` / `uninstall.sh`
+的引用，那是最初的整仓库安装器，**未随本 skill 一起分发**，请以本节为准。
 
 ## 产物契约
 
@@ -160,6 +180,9 @@ dev_docs.py report   --dir <目标项目>                  # 刷新 index.md 机
 dev_docs.py audit    --dir <目标项目> [--write] [--sample-refs 25] [--sample-cards 15]
                      # 独立评估工作底稿：抽样"文档原句 vs 源码原文"并排 + 行性质机器判定 +
                      # 卡片签名与盘点比对 + 机器项汇总；确定性输出（无随机，可复现）
+dev_docs.py doctor   --dir <目标项目>
+                     # 环境与能力自检：解释器版本 / tree-sitter 及语言包是否可用 / 输出目录可写性；
+                     # 退出码非 0 = 环境未就绪。装完依赖、或在门禁里排查"到底是环境问题还是文档问题"时先跑它
 ```
 
 ## 生成规范
@@ -253,3 +276,39 @@ inventory → plan --write → extract --layer all → （逐页填叙事 + 逐�
 - **交付前 `check --strict` 通过**：AI-FILL 填尽 + **卡片语义填尽（`semantic_todo_left`=0）** + 文件归属无遗漏 + 行号无异常
 - 每个 draft 经人工确认已 promote；人工区/权威链接已补 why
 - index.md 覆盖率摘要已刷新；产物与触发变更同一次提交
+
+## 作为 spec-dev-workflow 的流水线门禁（被编排时）
+
+本 skill 挂进 `spec-dev-workflow` 串联流水线（`pipelines/chained.json`）的 `07 docs` 阶段，门禁命令是：
+
+```json
+{"type":"command","cmd":"python",
+ "args":["{SKILLS_DIR}/dev-docs/scripts/dev_docs.py","check","--dir","{PROJECT_ROOT}","--strict"]}
+```
+
+被编排时必须知道的几条：
+
+1. **只有 `check` / `fixrefs` / `audit` / `plan` / `brief` / `register` / `doctor` 有可用的退出码语义。**
+   `inventory` / `extract` / `promote` / `report` **恒返回 0** —— 它们不是门禁，别拿来当校验。
+2. **门禁用 `check --strict` 而不是 `check --drift`。** 门禁应当只读；`--drift` 会触发重扫并写
+   `inventory.json`，在门禁里产生副作用不合适。`--drift` 的正确用途是长期漂移巡检（代码改了但文档没跟着改）。
+3. **未跑过 `inventory` 时 `check` 会直接失败**（"缺少 inventory.json"）。这是有意的 fail-closed：
+   门禁要求文档阶段必须真的用本 skill 做过抽取，而不是"没做就算过"。
+4. **缺依赖会静默放行，这是本 skill 最危险的一处坑。** tree-sitter 没装时 `inventory` **仍以 0 退出**，
+   只是产出一份"0 符号"的空盘点；随后 `check --strict` 对这份空文档集返回 **PASS（ERROR=0）**。
+   也就是说：**只用 `check` 当门禁，会把"什么都没提取"误判为"文档合格"。**
+   所以被编排时门禁必须是两步——先 `doctor`（环境未就绪即非 0 退出），再 `check --strict`。
+   手工排查时也用 `doctor` 区分"环境问题"和"文档问题"。
+5. `--dir` 指向**被开发的代码项目根**，不是 spec 目录；引擎的 `{PROJECT_ROOT}` 正好是这个值。
+   手动跑时注意：`resolve_root()` 会上溯到 **git 仓库根**，所以在 git 项目里 `--dir .` 也能解析对，
+   但**非 git 项目必须显式给对目录**，否则会把 spec 目录当成项目根。
+6. 抽取时机：在 `07 docs` 阶段内做完，`07-docs-update-plan.md` 记录产物清单 / 未归属文件 / 登记豁免，
+   门禁过了才收口。文档产物与代码变更**同一次提交**（本 skill 的既有红线）。
+
+## 与 spec 流程的分工边界
+
+- **流水线外的前置用法**：存量项目可以**先**跑一轮完整 dev-docs 反建，把 `docs/dev-docs/architecture.md`
+  作为 spec `02-design` 阶段的「现状架构基线」输入。这属于 `init` 之前的准备动作，不进流水线。
+- **流水线内的后置用法**：`07 docs` 阶段做增量再提取 + 对账门禁（上面那一节）。
+- 两种用法可以并存：前置一次建基线，之后每个 feature 走增量。
+- 本 skill **不改代码、不做需求分析**；代码问题在交付说明里作为"关键发现"回流，由用户决定是否改。

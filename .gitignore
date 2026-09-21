@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
+
+# spec-dev-workflow 运行时状态（会话/交接），不应入库
+.specworkflow/

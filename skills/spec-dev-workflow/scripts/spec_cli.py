@@ -21,6 +21,18 @@ spec-workflow 编排引擎 CLI（M0）
   - state.json 是唯一真源，只能由本 CLI 修改
   - 00-index.md 是渲染视图，任何状态变更后由本 CLI 重新生成
   - phase-complete 原子性：全部校验（顺序/门禁/handoff）通过才落盘，失败零变化
+
+门禁三种类型（由 pipeline 声明，接第三方 CLI 不需改引擎）:
+  - builtin ：内置原子规则（产物存在/非空、无占位符、无填写标记、任务勾选）
+  - command ：外部命令，exit 0 通过。推荐 args 模式，占位符由引擎展开（跨平台）：
+              {"type":"command","cmd":"python","args":["<脚本>","{SPEC_ROOT}","{SPEC_FEATURE}"]}
+              另支持旧式 {"cmd":"<整条 shell 命令>"}；两者都注入 SPEC_*/PROJECT_ROOT/SKILL_DIR 等环境变量
+  - review  ：质量门控，AI 按 spec-health-check 四维评审产出 --review-result；
+              min_score 比总分，require_gate 比 Gate 红线（green<yellow<red，缺失即拒）
+
+流水线来源：<spec-root>/pipeline.json 优先（支持 {"extends":"<内置名>"} 继承
+pipelines/<名>.json），否则用内置 pipelines/default.json。内置可选：
+default（8 阶段）、chained（9 阶段，串联 spec-health-check + dev-docs）。
 """
 
 import argparse
@@ -57,6 +69,23 @@ FILL_MARKER = "SPEC_TEMPLATE_PENDING"
 
 STAGE_STATUS_LABEL = {"pending": "⏳ 待开始", "in_progress": "🔄 进行中",
                       "completed": "✅ 已完成", "skipped": "⏭️ 已跳过"}
+
+# review 门控的 Gate 等级（spec-health-check 口径：green < yellow < red）
+GATE_ORDER = {"green": 0, "yellow": 1, "red": 2}
+
+# command 门禁可用的占位符（引擎侧展开，跨平台，不依赖 shell 的变量语法）
+#   {SPEC_ROOT}        spec 根目录（绝对路径）
+#   {SPEC_FEATURE}     当前 feature 目录名（<yyyymmddhhmm>-<slug>）
+#   {SPEC_DOCS_DIR}    当前 feature 的文档目录（绝对路径）
+#   {SPEC_SESSION_DIR} 当前 feature 的会话目录（含 state.json / handoff）
+#   {PROJECT_ROOT}     spec 根目录的上级 = 被开发项目根（默认 <项目>/spec 时成立）
+#   {SPEC_PHASE}       当前阶段 id
+#   {SKILL_DIR}        本 skill 目录
+#   {SKILLS_DIR}       同级 skill 的父目录（spec-health-check / dev-docs 所在处）
+#   {PYTHON}           当前 Python 解释器绝对路径
+# 同一批键名同时作为环境变量注入 command 门禁进程，方便脚本直接读取。
+COMMAND_PLACEHOLDERS = ("SPEC_ROOT", "SPEC_FEATURE", "SPEC_DOCS_DIR", "SPEC_SESSION_DIR",
+                        "PROJECT_ROOT", "SPEC_PHASE", "SKILL_DIR", "SKILLS_DIR", "PYTHON")
 
 
 def now_str() -> str:
@@ -111,23 +140,71 @@ def ensure_feature(spec_root: str, feature: str):
 # pipeline 加载与校验
 # ============================================================
 
+def _read_pipeline_file(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        err("pipeline 解析失败: %s (%s)" % (path, e))
+
+
+def available_pipelines() -> str:
+    """本 skill 内置流水线名列表（供 extends 取值与报错提示）"""
+    if not PIPELINES_DIR.is_dir():
+        return "（无）"
+    return ", ".join(sorted(p.stem for p in PIPELINES_DIR.glob("*.json"))) or "（无）"
+
+
+def load_builtin_pipeline(name) -> dict:
+    """按名加载本 skill 内置流水线；名字做白名单校验，杜绝路径穿越"""
+    safe = str(name).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", safe):
+        err("extends 名称非法（只允许字母、数字、下划线、连字符）: %r" % (name,))
+    path = PIPELINES_DIR / ("%s.json" % safe)
+    if not path.is_file():
+        err("extends 指向的内置流水线不存在: %s\n可用: %s" % (path, available_pipelines()))
+    return _read_pipeline_file(path)
+
+
 def load_pipeline(spec_root: str) -> dict:
-    """查找顺序：<spec-root>/pipeline.json → skill 内置 pipelines/default.json"""
+    """查找顺序：
+      1) <spec-root>/pipeline.json（项目级）。
+         若其为 {"extends": "<名>"} 形式，则以本 skill 内置 pipelines/<名>.json 为基底：
+         项目文件里的 id/name/version 覆盖基底，出现 stages 时整体替换基底 stages
+         （用于"只想改一小部分、又不想复制全量阶段"的场景）。
+      2) 本 skill 内置 pipelines/default.json
+    """
     project_cfg = Path(spec_root) / "pipeline.json"
     if project_cfg.is_file():
-        try:
-            p = json.loads(project_cfg.read_text(encoding="utf-8"))
-        except Exception as e:
-            err("项目 pipeline.json 解析失败: %s (%s)" % (project_cfg, e))
+        p = _read_pipeline_file(project_cfg)
+        base_name = p.get("extends")
+        if base_name:
+            base = load_builtin_pipeline(base_name)
+            merged = dict(base)
+            for k in ("id", "name", "version"):
+                if p.get(k):
+                    merged[k] = p[k]
+            if p.get("stages"):
+                merged["stages"] = p["stages"]
+            p = merged
+            p["_extends"] = str(base_name)
         p["_source"] = {"path": str(project_cfg), "kind": "project"}
     else:
         default_cfg = PIPELINES_DIR / "default.json"
-        p = json.loads(default_cfg.read_text(encoding="utf-8"))
+        p = _read_pipeline_file(default_cfg)
         p["_source"] = {"path": str(default_cfg), "kind": "builtin"}
     errors = validate_pipeline(p)
     if errors:
         err("pipeline 定义不合法:\n  " + "\n  ".join(errors))
     return p
+
+
+def _check_command_texts(check: dict) -> list:
+    """command 检查里所有可能出现占位符的字符串"""
+    texts = [check.get("cmd") or ""]
+    args = check.get("args")
+    if isinstance(args, list):
+        texts += [str(a) for a in args]
+    return texts
 
 
 def validate_pipeline(p: dict) -> list:
@@ -148,17 +225,41 @@ def validate_pipeline(p: dict) -> list:
             continue
         if not isinstance(s.get("artifacts", []), list):
             errors.append("[%s] artifacts 必须是数组" % sid)
+        tools = s.get("tools", [])
+        if not isinstance(tools, list):
+            errors.append("[%s] tools 必须是数组" % sid)
+        else:
+            for t in tools:
+                if not isinstance(t, dict) or not t.get("skill"):
+                    errors.append("[%s] tools 每项须为含 skill 字段的对象" % sid)
+                    break
         gate = s.get("gate", {})
         for check in gate.get("checks", []):
             ctype = check.get("type")
             if ctype not in ("builtin", "command", "review"):
                 errors.append("[%s] gate.check.type 非法: %s" % (sid, ctype))
-            if ctype == "command" and not check.get("cmd"):
-                errors.append("[%s] command 检查缺少 cmd" % sid)
+            if ctype == "command":
+                if not check.get("cmd"):
+                    errors.append("[%s] command 检查缺少 cmd" % sid)
+                args = check.get("args")
+                if args is not None:
+                    if not isinstance(args, list):
+                        errors.append("[%s] command 的 args 必须是数组" % sid)
+                    elif any(not isinstance(a, (str, int, float)) for a in args):
+                        errors.append("[%s] command 的 args 元素须为字符串或数字" % sid)
+                # 占位符白名单：拦住 {SPEC_FEATUR} 这类拼错后静默出错的情况
+                for text in _check_command_texts(check):
+                    for tok in re.findall(r"\{([A-Z_][A-Z0-9_]*)\}", str(text)):
+                        if tok not in COMMAND_PLACEHOLDERS:
+                            errors.append("[%s] command 用了未知占位符 {%s}（可用: %s）"
+                                          % (sid, tok, ", ".join("{%s}" % k for k in COMMAND_PLACEHOLDERS)))
             if ctype == "review":
                 ms = check.get("min_score", 80)
                 if not isinstance(ms, (int, float)) or not (0 <= ms <= 100):
                     errors.append("[%s] review 的 min_score 须为 0-100 数值" % sid)
+                rg = check.get("require_gate")
+                if rg is not None and rg not in GATE_ORDER:
+                    errors.append("[%s] review 的 require_gate 须为 green/yellow/red：%r" % (sid, rg))
             if ctype == "builtin":
                 for rule in check.get("rules", []):
                     if rule not in BUILTIN_RULES:
@@ -451,20 +552,73 @@ def _platform_cmd(cmd, is_win=None):
     return cmd
 
 
+def _platform_argv0(token) -> str:
+    """args 模式的首元素归一：python/python3 → 当前解释器（Windows 常无 python3 启动名）"""
+    return sys.executable if str(token).strip() in ("python", "python3") else str(token)
+
+
+def _cmd_context(spec_root, fd: Path, stage: dict) -> dict:
+    """command 门禁的占位符 / 环境变量上下文（见 COMMAND_PLACEHOLDERS 注释）"""
+    root = Path(spec_root)
+    feature = fd.name
+    return {
+        "SPEC_ROOT": str(root),
+        "SPEC_FEATURE": feature,
+        "SPEC_DOCS_DIR": str(fd),
+        "SPEC_SESSION_DIR": str(session_dir(str(root), feature)),
+        "PROJECT_ROOT": str(root.parent),
+        "SPEC_PHASE": stage.get("id", ""),
+        "SKILL_DIR": str(SKILL_ROOT),
+        "SKILLS_DIR": str(SKILL_ROOT.parent),
+        "PYTHON": sys.executable,
+    }
+
+
+def _expand_placeholders(text, ctx: dict) -> str:
+    """展开 {KEY}；未知占位符原样保留（validate_pipeline 已在加载期拦截）"""
+    return re.sub(r"\{([A-Z_][A-Z0-9_]*)\}",
+                  lambda m: ctx.get(m.group(1), m.group(0)), str(text))
+
+
 def run_command_check(spec_root: Path, fd: Path, stage: dict, check: dict) -> dict:
-    cmd = _platform_cmd(check["cmd"])
+    """command 门禁：把任意 CLI 接成门禁（exit 0 通过）。两种写法：
+
+    - **args 模式（推荐）**：
+        {"type":"command","cmd":"python","args":["<脚本>","{SPEC_ROOT}","{SPEC_FEATURE}"]}
+      shell=False 逐参数传递 → 路径含空格/中文安全；占位符由引擎展开，跨平台一致。
+    - **旧式 shell 模式**：{"type":"command","cmd":"<整条 shell 命令>"}
+      交给 cmd.exe(Windows) / /bin/sh，保持向后兼容。
+
+    两种模式都会：cwd = spec 根目录；注入 SPEC_ROOT / SPEC_FEATURE / SPEC_DOCS_DIR /
+    SPEC_SESSION_DIR / PROJECT_ROOT / SPEC_PHASE / SKILL_DIR / SKILLS_DIR / PYTHON 环境变量。
+    """
+    ctx = _cmd_context(spec_root, fd, stage)
+    env = dict(os.environ)
+    env.update(ctx)
+    args = check.get("args")
+    if args is not None:
+        argv = [_platform_argv0(_expand_placeholders(check["cmd"], ctx))]
+        argv += [_expand_placeholders(a, ctx) for a in args]
+        shown = " ".join(argv)
+    else:
+        argv = None
+        shown = _expand_placeholders(_platform_cmd(check["cmd"]), ctx)
     try:
-        proc = subprocess.run(cmd, shell=True, cwd=str(spec_root), timeout=CMD_TIMEOUT,
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if argv is not None:
+            proc = subprocess.run(argv, shell=False, cwd=str(spec_root), timeout=CMD_TIMEOUT,
+                                  env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        else:
+            proc = subprocess.run(shown, shell=True, cwd=str(spec_root), timeout=CMD_TIMEOUT,
+                                  env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         output = proc.stdout.decode("utf-8", errors="replace")[:CMD_OUTPUT_LIMIT]
-        return {"type": "command", "cmd": cmd, "passed": proc.returncode == 0,
+        return {"type": "command", "cmd": shown, "passed": proc.returncode == 0,
                 "detail": output.strip() or ("exit=%d" % proc.returncode),
                 "exit": proc.returncode}
     except subprocess.TimeoutExpired:
-        return {"type": "command", "cmd": cmd, "passed": False,
+        return {"type": "command", "cmd": shown, "passed": False,
                 "detail": "超时（>%ds）" % CMD_TIMEOUT}
     except Exception as e:
-        return {"type": "command", "cmd": cmd, "passed": False, "detail": "执行异常: %s" % e}
+        return {"type": "command", "cmd": shown, "passed": False, "detail": "执行异常: %s" % e}
 
 
 def validate_review_result(payload: dict) -> list:
@@ -489,27 +643,46 @@ def validate_review_result(payload: dict) -> list:
 
 
 def run_review_check(check: dict, review_result: dict, precheck: bool, phase: str) -> dict:
-    """review 门控：AI 按 spec-health-check 评审产出 --review-result，引擎机器把关分数阈值"""
+    """review 门控：AI 按 spec-health-check 评审产出 --review-result，引擎机器把关
+
+    - `min_score`   ：总分下限（默认 80）
+    - `require_gate`：可选。要求 review-result 的 `gate` 达到该等级（green < yellow < red）。
+      与 spec-health-check 的 Gate 条件集对齐，避免"总分够但实际红灯"被放行。
+      **fail-closed**：`gate` 缺失或非法时判不合格，不许只报分数不报 Gate。
+    """
     min_score = check.get("min_score", 80)
+    require_gate = check.get("require_gate")
     if precheck:
-        return {"type": "review", "min_score": min_score, "passed": True, "skipped": True,
-                "detail": "review 门控：收口时校验（gate 预检跳过，达标线 %d）" % min_score}
+        extra = "，Gate 须 %s" % require_gate if require_gate else ""
+        return {"type": "review", "min_score": min_score, "require_gate": require_gate,
+                "passed": True, "skipped": True,
+                "detail": "review 门控：收口时校验（gate 预检跳过，达标线 %d%s）" % (min_score, extra)}
     if review_result is None:
-        return {"type": "review", "min_score": min_score, "passed": False,
-                "detail": "缺少 --review-result（须按 spec-health-check 四维评审提供 score/issues）"}
+        return {"type": "review", "min_score": min_score, "require_gate": require_gate, "passed": False,
+                "detail": "缺少 --review-result（须按 spec-health-check 四维评审提供 score/gate/issues）"}
     errors = validate_review_result(review_result)
     if errors:
-        return {"type": "review", "min_score": min_score, "passed": False,
+        return {"type": "review", "min_score": min_score, "require_gate": require_gate, "passed": False,
                 "detail": "review-result 不合法: " + "; ".join(errors)}
     score = review_result["score"]
+    gate = review_result.get("gate")
     issues = review_result.get("issues", [])
     passed = score >= min_score
     detail = "score=%d %s 达标线 %d" % (score, "≥" if passed else "<", min_score)
+    if require_gate:
+        if gate not in GATE_ORDER:
+            passed = False
+            detail += " | gate=%r 缺失或非法（require_gate=%s，必须显式给出）" % (gate, require_gate)
+        elif GATE_ORDER[gate] > GATE_ORDER[require_gate]:
+            passed = False
+            detail += " | gate=%s 未达要求 %s" % (gate, require_gate)
+        else:
+            detail += " | gate=%s ✓（要求 %s）" % (gate, require_gate)
     if not passed and issues:
         top = "; ".join("[%s] %s" % (i.get("severity", "?"), i.get("desc", "")) for i in issues[:3])
         detail += " | issues: " + top
-    return {"type": "review", "min_score": min_score, "score": score, "passed": passed,
-            "detail": detail, "issues": issues, "gate": review_result.get("gate")}
+    return {"type": "review", "min_score": min_score, "require_gate": require_gate,
+            "score": score, "passed": passed, "detail": detail, "issues": issues, "gate": gate}
 
 
 def run_gate(spec_root: str, fd: Path, state: dict, pipeline: dict, phase: str,
@@ -774,20 +947,26 @@ def cmd_restore(args) -> None:
             last_handoff = json.loads(hf.read_text(encoding="utf-8"))
 
     cur = state.get("current_phase")
+    stage = stage_by_id(pipeline, cur) if cur else None
+    cur_tools = (stage or {}).get("tools") or []
     if cur is None:
         suggest = "全部阶段已完成；可执行 status 复查或开始新 feature"
+    elif stage and stage.get("confirm_point"):
+        suggest = "继续 [%s]：阅读产物并完成填写后，先向用户展示确认，再 phase-complete" % cur
     else:
-        stage = stage_by_id(pipeline, cur)
-        if stage and stage.get("confirm_point"):
-            suggest = "继续 [%s]：阅读产物并完成填写后，先向用户展示确认，再 phase-complete" % cur
-        else:
-            suggest = "继续 [%s]：阅读上游 handoff，完成产物后执行 phase-complete" % cur
+        suggest = "继续 [%s]：阅读上游 handoff，完成产物后执行 phase-complete" % cur
+    if cur_tools:
+        names = "、".join(str(t.get("skill", "?")) for t in cur_tools)
+        roles = "；".join("%s：%s" % (t.get("skill", "?"), t.get("role", ""))
+                         for t in cur_tools if t.get("role"))
+        suggest += "｜本阶段绑定 skill: %s%s" % (names, ("（%s）" % roles) if roles else "")
 
     if args.json:
         out = {
             "feature": state["feature"], "display_name": state["display_name"],
             "pipeline": state["pipeline"], "spec_root": state["spec_root"],
             "current_phase": cur,
+            "current_stage_tools": cur_tools,
             "phases": {sid: {"status": p["status"], "completed_at": p.get("completed_at", ""),
                              **({"skip_reason": p["skip_reason"]} if p.get("skip_reason") else {})}
                        for sid, p in state["phases"].items()},
