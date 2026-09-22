@@ -11,7 +11,7 @@
 
 | Skill | 版本 | 一句话说明 |
 |:---|:---|:---|
-| [`spec-dev-workflow`](skills/spec-dev-workflow/) | 0.6.0 | spec 驱动开发流水线，**默认 9 阶段串联流程**，由编排引擎 `spec_cli.py` 驱动，每阶段带机器门禁、状态机与断点续传 |
+| [`spec-dev-workflow`](skills/spec-dev-workflow/) | 0.7.0 | spec 驱动开发流水线，**默认 9 阶段串联流程**，设计阶段强制用户确认（`require_confirm`），由编排引擎 `spec_cli.py` 驱动，每阶段带机器门禁、状态机与断点续传 |
 | [`spec-health-check`](skills/spec-health-check/) | 0.3.2 | 对已有 spec 目录做双层体检（脚本层结构 + 模型层文档质量），输出 0-100 健康度评分与返修指引 |
 | [`dev-docs`](skills/dev-docs/) | 1.5.7 | 从存量代码库反向生成技术文档（总览 / 架构 / 上手 / 各模块详档），支持漂移检测与证据标注 |
 

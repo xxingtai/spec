@@ -1,10 +1,10 @@
 {
   "slug": "spec-dev-workflow",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "createdAt": "2026-07-17",
-  "updatedAt": "2026-09-21",
+  "updatedAt": "2026-09-22",
   "author": "ryaondeng",
-  "note": "spec-workflow 编排层第一个被集成的 skill（自包含：SKILL.md + scripts/spec_cli.py + pipelines + templates + references）。0.5.0 起支持 command 门禁 args 模式与占位符/环境变量注入、review 门控的 require_gate Gate 红线判定、pipeline 的 extends 继承，以及声明式 tools 字段。0.6.0 起 pipelines/chained.json（9 阶段，串联 spec-health-check + dev-docs）成为**默认流水线**：不写 pipeline.json 即走串联流程，pipelines/default.json 降为显式退回项（{\"extends\":\"default\"}）；新增加载期的同级 skill 依赖校验（缺依赖 fail-closed 并给出两条出路）与阶段集合漂移拦截（state 与 pipeline 阶段集合不一致时拒绝执行）。",
+  "note": "spec-workflow 编排层第一个被集成的 skill（自包含：SKILL.md + scripts/spec_cli.py + pipelines + templates + references）。0.5.0 起支持 command 门禁 args 模式与占位符/环境变量注入、review 门控的 require_gate Gate 红线判定、pipeline 的 extends 继承，以及声明式 tools 字段。0.6.0 起 pipelines/chained.json（9 阶段，串联 spec-health-check + dev-docs）成为**默认流水线**：不写 pipeline.json 即走串联流程，pipelines/default.json 降为显式退回项（{\"extends\":\"default\"}）；新增加载期的同级 skill 依赖校验（缺依赖 fail-closed 并给出两条出路）与阶段集合漂移拦截（state 与 pipeline 阶段集合不一致时拒绝执行）。0.7.0 新增**阶段级强制确认点** require_confirm：置 true 的阶段收口必须带 --user-confirmed \"<说明>\"，缺失即拒绝（fail-closed），确认内容写入 state.json 留痕（at/note）；内置流水线的 02 design（产出 02-design.md + 03-implementation-plan.md）已启用，requirements 保持提示级的 confirm_point 不强制。配套：validate_pipeline 校验该字段为布尔、gate 预检与看板/restore 提示、restore --json 暴露 current_stage_require_confirm。",
   "fork": {
     "maintainer": "xingtai",
     "since": "2026-09-21",

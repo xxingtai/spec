@@ -2,7 +2,7 @@
   "id": "spec-chained",
   "name": "Spec 串联流程（9 阶段：编排 + 质量验收 + 文档抽取）",
   "version": "1.0",
-  "note": "【默认流水线】不写 <spec根>/pipeline.json 时就用本流程。在 default 8 阶段之上：① 06 review 增加 Gate 红线判定（与 spec-health-check 的 🟢 条件集对齐）；② 07 docs 挂 dev-docs 的对账门禁；③ 新增 09 acceptance 阶段，把 spec-health-check 的脚本层与模型层同时作为终局门禁。本流程依赖 spec-health-check 与 dev-docs 与本 skill 同级安装，缺失时引擎在加载期 fail-closed 报错；若只想单用本 skill，用 {\"extends\": \"default\"} 退回 8 阶段独立流程。",
+  "note": "【默认流水线】不写 <spec根>/pipeline.json 时就用本流程。在 default 8 阶段之上：① 06 review 增加 Gate 红线判定（与 spec-health-check 的 🟢 条件集对齐）；② 07 docs 挂 dev-docs 的对账门禁；③ 新增 09 acceptance 阶段，把 spec-health-check 的脚本层与模型层同时作为终局门禁；④ 02 design 起用 require_confirm（强制确认点）—— 设计与实现计划必须在用户明确确认后才能收口，收口须带 --user-confirmed，否则机器直接拒绝。本流程依赖 spec-health-check 与 dev-docs 与本 skill 同级安装，缺失时引擎在加载期 fail-closed 报错；若只想单用本 skill，用 {\"extends\": \"default\"} 退回 8 阶段独立流程。",
   "stages": [
     {
       "id": "requirements",
@@ -21,6 +21,7 @@
       "name": "设计规划",
       "artifacts": ["02-design.md", "03-implementation-plan.md"],
       "confirm_point": true,
+      "require_confirm": true,
       "gate": {
         "checks": [
           {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]}

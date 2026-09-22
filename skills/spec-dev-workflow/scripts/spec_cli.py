@@ -10,6 +10,8 @@ spec-workflow 编排引擎 CLI（M0）
 用法:
   python3 spec_cli.py init <spec-root> <feature> [--name <显示名>]
   python3 spec_cli.py phase-complete <spec-root> <feature> <phase> --handoff '<json>'
+  python3 spec_cli.py phase-complete <spec-root> <feature> <phase> --handoff '<json>' \
+      --user-confirmed "<用户确认说明>"   # 强制确认点阶段（require_confirm=true）必填，缺则拒绝
   python3 spec_cli.py phase-complete <spec-root> <feature> <phase> --skip <原因>
   python3 spec_cli.py gate <spec-root> <feature> [--phase <phase>]
   python3 spec_cli.py handoff read <spec-root> <feature> <phase>
@@ -29,6 +31,12 @@ spec-workflow 编排引擎 CLI（M0）
               另支持旧式 {"cmd":"<整条 shell 命令>"}；两者都注入 SPEC_*/PROJECT_ROOT/SKILL_DIR 等环境变量
   - review  ：质量门控，AI 按 spec-health-check 四维评审产出 --review-result；
               min_score 比总分，require_gate 比 Gate 红线（green<yellow<red，缺失即拒）
+
+第四类约束 —— 强制确认点（不是门禁 check，而是阶段级开关）:
+  stage.require_confirm = true 时，phase-complete 必须显式带 --user-confirmed "<说明>"，
+  否则直接拒绝（fail-closed）。用于"设计、实现计划"这类**必须用户点头才能往下走**的阶段，
+  防止 AI 自行认定"已确认"就流转。确认内容会写入 state.json 留痕（时间 + 原话）。
+  与 confirm_point 的分工：confirm_point 只改提示文案，require_confirm 才是机器拦截。
 
 流水线来源：<spec-root>/pipeline.json 优先（支持 {"extends":"<内置名>"} 继承
 pipelines/<名>.json），否则用内置 pipelines/chained.json（**默认**）。内置可选：
@@ -81,6 +89,13 @@ STAGE_STATUS_LABEL = {"pending": "⏳ 待开始", "in_progress": "🔄 进行中
 
 # review 门控的 Gate 等级（spec-health-check 口径：green < yellow < red）
 GATE_ORDER = {"green": 0, "yellow": 1, "red": 2}
+
+# 强制确认点（stage.require_confirm = true）：phase-complete 必须显式带
+# --user-confirmed "<用户确认说明>"，否则拒绝收口（fail-closed）。
+# 与 confirm_point 的区别 —— 两者是**不同层级的两种东西**：
+#   confirm_point=true  仅提示级：影响看板 / restore 的建议文案（"先向用户展示确认"）
+#   require_confirm=true 门禁级：机器会拦。防止 AI 自行认定"这看起来没问题"就直接流转
+# 命名与 review 门控里的 require_gate 对齐（一个是 Gate 红线，一个是确认红线）。
 
 # command 门禁可用的占位符（引擎侧展开，跨平台，不依赖 shell 的变量语法）
 #   {SPEC_ROOT}        spec 根目录（绝对路径）
@@ -334,6 +349,11 @@ def validate_pipeline(p: dict) -> list:
                 if not isinstance(t, dict) or not t.get("skill"):
                     errors.append("[%s] tools 每项须为含 skill 字段的对象" % sid)
                     break
+        # require_confirm：强制确认点开关（与 confirm_point 不同，这是机器门禁）
+        if s.get("require_confirm") is not None and not isinstance(s.get("require_confirm"), bool):
+            errors.append("[%s] require_confirm 须为布尔值 true/false" % sid)
+        if s.get("confirm_point") is not None and not isinstance(s.get("confirm_point"), bool):
+            errors.append("[%s] confirm_point 须为布尔值 true/false" % sid)
         gate = s.get("gate", {})
         for check in gate.get("checks", []):
             ctype = check.get("type")
@@ -377,6 +397,32 @@ def stage_by_id(pipeline: dict, phase: str) -> dict:
 
 def phase_ids(pipeline: dict) -> list:
     return [s["id"] for s in pipeline["stages"]]
+
+
+def stage_requires_confirm(stage) -> bool:
+    """该阶段是否为机器强制的用户确认点（require_confirm=true）"""
+    return bool((stage or {}).get("require_confirm"))
+
+
+def confirm_hint(stage) -> str:
+    """强制确认点被拦时的修复指引（命令行示例里的阶段 id 用实际值）"""
+    sid = (stage or {}).get("id", "<阶段>")
+    arts = "、".join((stage or {}).get("artifacts", [])) or "本阶段产物"
+    return "\n".join([
+        "阶段 [%s] 是**强制确认点**，收口前必须取得用户明确确认。" % sid,
+        "  这是机器门禁：不带 --user-confirmed 一律拒绝，"
+        "避免把「AI 自行认为已确认」当成用户确认。",
+        "",
+        "  正确做法：",
+        "    1) 把本阶段产物完整展示给用户：%s" % arts,
+        "    2) 停下来等用户明确表态（同意 / 要改哪里），"
+        "不要用「看起来没问题」代替",
+        "    3) 用户认可后收口，并把确认内容带上：",
+        "       phase-complete <spec根目录> <feature> %s \\" % sid,
+        "         --handoff '…' --user-confirmed \"<用户确认的原话或要点>\"",
+        "",
+        "  若本阶段确实要整段跳过，改用 --skip \"<原因>\"（同样落盘、可审计）。",
+    ])
 
 
 # ============================================================
@@ -914,7 +960,9 @@ def render_board(state: dict, pipeline: dict) -> str:
     else:
         stage = stage_by_id(pipeline, cur)
         next_hint = "完成产物后执行 phase-complete 收口"
-        if stage and stage.get("confirm_point"):
+        if stage_requires_confirm(stage):
+            next_hint = "🔒 强制确认点：先展示产物取得用户确认，收口须带 --user-confirmed"
+        elif stage and stage.get("confirm_point"):
             next_hint = "完成产物后先向用户展示确认，再 phase-complete 收口"
         lines.append("当前阶段：%s　下一步：%s" % (cur, next_hint))
     return "\n".join(lines)
@@ -934,6 +982,9 @@ def cmd_gate(args) -> None:
         err("当前无进行中阶段")
     result = run_gate(args.spec_root, docs, state, pipeline, phase, precheck=True)
     print_gate(result)
+    if stage_requires_confirm(stage_by_id(pipeline, phase)):
+        print("🔒 本阶段为强制确认点：收口必须带 --user-confirmed \"<用户确认说明>\"，"
+              "否则 phase-complete 会被拒绝")
     sys.exit(0 if result["passed"] else 1)
 
 
@@ -962,6 +1013,12 @@ def cmd_phase_complete(args) -> None:
         print("⏭️ 已跳过 %s：%s" % (phase, reason))
         print(render_board(state, pipeline))
         return
+
+    # ---- 0. 强制确认点（机器门禁；先于门禁/handoff 校验，避免白跑一遍检查）----
+    stage = stage_by_id(pipeline, phase)
+    confirm_note = (args.user_confirmed or "").strip()
+    if stage_requires_confirm(stage) and not confirm_note:
+        err(confirm_hint(stage))
 
     # ---- 1. 门禁 ----
     # 解析 review-result（挂 review 门控的阶段收口需提供；解析失败直接拒绝）
@@ -994,12 +1051,18 @@ def cmd_phase_complete(args) -> None:
 
     # ---- 4. 全部校验通过，落盘（原子性：以上任何失败都不改状态）----
     write_handoff(sess, phase, payload)
-    state["phases"][phase] = {"status": "completed", "completed_at": now_str(),
-                              "gate_result": gate_result}
+    completed = {"status": "completed", "completed_at": now_str(),
+                 "gate_result": gate_result}
+    if confirm_note:
+        # 确认留痕：谁在什么时候确认的、确认了什么（用于事后审计"是不是真的用户点的头"）
+        completed["user_confirmed"] = {"at": now_str(), "note": confirm_note}
+    state["phases"][phase] = completed
     _advance_current(state, ids)
     save_state(sess, state)
     write_index(docs, state, pipeline)
     print("✅ %s 阶段收口完成（门禁 %s 项全过）" % (phase, len(gate_result["checks"])))
+    if confirm_note:
+        print("🔒 用户确认已留痕：%s" % confirm_note)
     print(render_board(state, pipeline))
 
 
@@ -1058,6 +1121,9 @@ def cmd_restore(args) -> None:
     cur_tools = (stage or {}).get("tools") or []
     if cur is None:
         suggest = "全部阶段已完成；可执行 status 复查或开始新 feature"
+    elif stage_requires_confirm(stage):
+        suggest = ("继续 [%s]：阅读产物并完成填写后，**必须先展示给用户并取得明确确认**，"
+                   "再带 --user-confirmed \"<确认说明>\" 收口（缺此项会被机器拒绝）" % cur)
     elif stage and stage.get("confirm_point"):
         suggest = "继续 [%s]：阅读产物并完成填写后，先向用户展示确认，再 phase-complete" % cur
     else:
@@ -1074,6 +1140,7 @@ def cmd_restore(args) -> None:
             "pipeline": state["pipeline"], "spec_root": state["spec_root"],
             "current_phase": cur,
             "current_stage_tools": cur_tools,
+            "current_stage_require_confirm": stage_requires_confirm(stage),
             "phases": {sid: {"status": p["status"], "completed_at": p.get("completed_at", ""),
                              **({"skip_reason": p["skip_reason"]} if p.get("skip_reason") else {})}
                        for sid, p in state["phases"].items()},
@@ -1128,6 +1195,9 @@ def main() -> None:
     p.add_argument("--decision", default=None, help="可选：追加一条决策记录")
     p.add_argument("--review-result", default=None,
                    help="review 门控阶段必填：spec-health-check 评审 JSON（score/issues）")
+    p.add_argument("--user-confirmed", default=None, metavar="说明",
+                   help="强制确认点阶段（require_confirm=true）必填：用户明确确认的原话或要点。"
+                        "缺此项直接拒绝收口")
     p.set_defaults(func=cmd_phase_complete)
 
     p = sub.add_parser("gate", help="门禁检查（可独立预检）")

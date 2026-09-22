@@ -1,15 +1,17 @@
 ---
 name: spec-dev-workflow
-version: 0.6.0
+version: 0.7.0
 description: >
   spec-workflow 编排层的核心流水线 skill（spec 驱动开发）。默认走 9 阶段串联流程：
   把 spec-health-check 的质量评审/终局验收与 dev-docs 的文档对账挂成机器门禁；
   另附 8 阶段独立流程（零外部依赖，用 {"extends":"default"} 退回）。
   由编排引擎（spec_cli.py）驱动：开始新功能/新阶段时初始化 spec，
   按声明式流水线逐阶段推进——每阶段完成必须通过机器门禁（结构 + 可扩展检查），
-  需求/设计两阶段先经用户确认，产物与决策登记进 state.json，阶段间以 handoff 交接。
-  支持中断后断点续传。门禁三类：builtin 内置规则、command 外部命令（args + 占位符，跨平台接任意 CLI）、
-  review 质量门控（score + Gate 红线）。
+  产物与决策登记进 state.json，阶段间以 handoff 交接。支持中断后断点续传。
+  门禁三类：builtin 内置规则、command 外部命令（args + 占位符，跨平台接任意 CLI）、
+  review 质量门控（score + Gate 红线）；另有阶段级强制确认点（require_confirm）：
+  设计阶段（含实现计划）必须在用户明确确认后才能收口，收口须带 --user-confirmed，
+  否则机器直接拒绝，杜绝 AI 自行认定"已确认"就流转。
   触发词：开始开发、开始阶段、开始功能、init spec、初始化开发、
   开发第N阶段、准备开发、恢复开发、继续开发、查进度
 ---
@@ -51,6 +53,8 @@ python3 $CLI phase-complete <spec根目录> <feature> <阶段> \
   --handoff '{"summary":"...","key_decisions":[...],"artifacts":{...},"next_inputs":{...}}'
 python3 $CLI phase-complete <spec根目录> <feature> review \
   --handoff '...' --review-result '{"score":87,"gate":"green","dimensions":[{"id":"A需求质量","score":92},...],"issues":[{"severity":"MINOR","dimension":"B","desc":"...","fix":"..."}]}'  # review 质量门控阶段必填，score<min_score(默认80)拒绝
+python3 $CLI phase-complete <spec根目录> <feature> design \
+  --handoff '...' --user-confirmed "<用户确认的原话或要点>"        # 强制确认点阶段必填，缺则直接拒绝
 python3 $CLI phase-complete <spec根目录> <feature> <阶段> --skip "<原因>"   # 显式跳过
 python3 $CLI gate <spec根目录> <feature> [--phase 阶段]        # 门禁预检
 python3 $CLI handoff read <spec根目录> <feature> <阶段>         # 读上游交接
@@ -89,6 +93,40 @@ python3 $CLI handoff list <spec根目录> <feature>
 `init` / `status` / `restore` 都会打印实际生效的 pipeline id、名称、阶段数与来源，
 可据此确认配置是否生效。`extends` 的名字只允许字母数字`-`，路径穿越会被拒绝。
 
+### 强制确认点（require_confirm）
+
+**`design` 阶段是强制确认点。** 它同时产出 `02-design.md`（设计）与 `03-implementation-plan.md`
+（实现计划），收口时机器会拦：**不带 `--user-confirmed` 一律拒绝**。
+
+| 字段 | 层级 | 行为 |
+|:---|:---|:---|
+| `confirm_point: true` | 提示级 | 只影响看板 / `restore` 的建议文案（"先向用户展示确认"）。**引擎不拦** |
+| `require_confirm: true` | **门禁级** | `phase-complete` 强制要求 `--user-confirmed "<说明>"`，缺失即拒绝（fail-closed） |
+
+两者并存是有意的：这次专门补 `require_confirm`，是因为原先只有 `confirm_point`，而它
+**只改提示文案、完全不拦** —— AI 直接调 `phase-complete` 就能过，"必须用户确认"全靠自觉。
+现在它变成了真门禁。内置流水线里**只有 `design` 挂了 `require_confirm`**；
+`requirements` 仍是提示级（`confirm_point`），不强制。
+
+**对强制确认点阶段的正确姿势**：
+
+1. 写完全部产物后，把 `02-design.md` + `03-implementation-plan.md` **完整展示给用户**
+2. **停下来**等用户明确表态（同意 / 要改哪里）—— 不要用"看起来没问题"代替用户点头
+3. 用户认可后再收口，并把确认内容带上：
+
+```bash
+python3 $CLI phase-complete <spec根目录> <feature> design \
+  --handoff '...' --user-confirmed "用户确认：架构图与任务拆解 OK，可以进入实现"
+```
+
+确认会写入 `state.json` 留痕（`phases.design.user_confirmed = {at, note}`），
+可事后审计"是不是真的用户点的头"。空白串等同未提供。
+
+确实要整段跳过就用 `--skip "<原因>"` —— 同样落盘、可审计，不会静默放行。
+
+`restore --json` 会输出 `current_stage_require_confirm`，会话第一步据此判断当前阶段
+是否必须停下来问用户；`gate` 预检也会打印 🔒 提示。
+
 ## 入口路由（每次会话第一步）
 
 | 用户意图 | 动作 |
@@ -108,6 +146,9 @@ python3 $CLI handoff list <spec根目录> <feature>
    **完成后删除产物文件末尾的模板标记行**（含 `SPEC_TEMPLATE_PENDING` 的行）——门禁据此判定已填写。
 3. **确认点阶段**（pipeline 中 `confirm_point: true`，默认 requirements/design）：
    先把产物要点 + 验收标准/设计要点呈现给用户，**获用户认可后才能收口**，不得自主推进。
+   - **`design` 是强制确认点**（`require_confirm: true`）：这是**机器门禁**，收口时必须带
+     `--user-confirmed "<用户确认说明>"`，缺失即拒绝 —— 不是"应该确认"，是"不确认过不去"。
+   - `requirements` 是提示级确认点（只有 `confirm_point`）：引擎不拦，纪律靠自觉。
 4. **review 质量门控**（pipeline 中挂 `{"type":"review"}` 的阶段，默认 review）：
    收口前按 `spec-health-check` skill 的四维评审（A 需求质量/B 跨文档一致性/C 留痕真实性/D 设计计划）
    对 feature 产物链评审打分，产出 review-result（score 0-100 + gate + dimensions + issues）：
@@ -155,19 +196,27 @@ python3 $CLI handoff list <spec根目录> <feature>
 
 **指南**：阅读 `references/requirements.md`。**收口前必须向用户展示并确认。**
 
-### 阶段二：设计规划（confirm_point）
+### 阶段二：设计规划（🔒 强制确认点）
 
 **产物**：`02-design.md`（架构/模块/接口/数据模型/错误处理）+ `03-implementation-plan.md`（任务拆解 15-30min，依赖明确）
+—— 设计与它的实现计划**同属一个阶段、同一次确认**，不拆成两段。
 
 **要点**：必须含 Mermaid 架构图；每个模块职责单一；任务能落地执行。
 
-**指南**：阅读 `references/design.md`。**收口前必须向用户展示并确认。**
+**指南**：阅读 `references/design.md`。
+
+> 🔒 **本阶段 `require_confirm: true` —— 收口不带 `--user-confirmed` 会被引擎直接拒绝。**
+> 把 `02` 与 `03` 完整展示给用户，等其明确表态后，用
+> `--user-confirmed "<用户确认的原话或要点>"` 收口；确认写入 `state.json` 留痕，可事后审计。
 
 ### 阶段三：实现
 
 **产物**：源代码 + 在 `08-commit.md` 任务清单勾选进度
 
 **执行**：按 03 的任务逐个实现（先测试后实现或按项目惯例），完成的打 `[x]`。
+
+> 03 的实现计划已在阶段二随设计**一并确认过**，所以本阶段不再强制确认。
+> 若实现中发现计划需要变更，**回到阶段二改 03 并重新确认**，不要在阶段三自行改计划。
 
 ### 阶段四：单元测试
 
